@@ -1,0 +1,133 @@
+import pygame
+import os
+from settings import gravity, player_jump_strength, player_move_speed, player_width, player_height, color_player
+
+class Player(pygame.sprite.Sprite):
+    def __init__(self, x=200, y=300):
+        pygame.sprite.Sprite.__init__(self)
+
+        # try to load images, otherwise use a colored rect
+        raw_images = []
+        for i in range(1, 9):
+            path = os.path.join('images', 'hero' + str(i) + '.png')
+            try:
+                img = pygame.image.load(path).convert_alpha()
+                raw_images.append(img)
+            except Exception:
+                # image missing -> continue (we'll use fallback surface)
+                pass
+
+        # animation frames (scaled)
+        if raw_images:
+            self.anim_frames = [
+                pygame.transform.scale(img, (player_width, player_height)).convert_alpha()
+                for img in raw_images
+            ]
+        else:
+            surf = pygame.Surface((player_width, player_height), pygame.SRCALPHA)
+            surf.fill(color_player)
+            self.anim_frames = [surf]
+
+        # animation state
+        self.anim_index = 0
+        self.anim_delay_ms = 80
+        self.last_anim_time = pygame.time.get_ticks()
+
+        # facing / movement
+        self.facing_right = True
+
+        # start image & rect
+        self.image = self.anim_frames[0]
+        self.rect = self.image.get_rect()
+
+        # world coordinates
+        self.x = x
+        self.y = y
+        self.vel_y = 0
+        self.on_ground = False
+
+    def _update_animation(self, moving):
+        now = pygame.time.get_ticks()
+        if moving:
+            if now - self.last_anim_time >= self.anim_delay_ms:
+                self.anim_index = (self.anim_index + 1) % len(self.anim_frames)
+                self.last_anim_time = now
+        else:
+            # idle -> reset to first frame
+            self.anim_index = 0
+
+        frame = self.anim_frames[self.anim_index]
+        if not self.facing_right:
+            frame = pygame.transform.flip(frame, True, False)
+        # update image and rect size (keep topleft after)
+        prev_topleft = getattr(self, "rect", pygame.Rect(0, 0, 0, 0)).topleft
+        self.image = frame
+        self.rect = self.image.get_rect()
+        self.rect.topleft = prev_topleft
+
+    def update(self, platforms, camera_scroll_x):
+        keys = pygame.key.get_pressed()
+
+        # remember previous position for collision direction checks
+        prev_x = self.x
+        prev_y = self.y
+
+        # Horizontal movement
+        moving = False
+        if keys[pygame.K_LEFT]:
+            self.x -= player_move_speed
+            self.facing_right = False
+            moving = True
+        if keys[pygame.K_RIGHT]:
+            self.x += player_move_speed
+            self.facing_right = True
+            moving = True
+
+        # Horizontal collision resolution (prevent moving into platform sides)
+        horiz_rect = pygame.Rect(int(self.x), int(self.y), player_width, player_height)
+        for plat in platforms:
+            if horiz_rect.colliderect(plat):
+                # Only treat this as a side collision if there's vertical overlap
+                # (prevents pushing the player off when they are landing on top)
+                vertical_overlap = not ((self.y + player_height) <= plat.y or self.y >= (plat.y + plat.height))
+                if vertical_overlap:
+                    # collided horizontally: push back to previous safe position
+                    if prev_x < self.x:
+                        # moving right -> place to left of platform
+                        self.x = plat.x - player_width
+                    elif prev_x > self.x:
+                        # moving left -> place to right of platform
+                        self.x = plat.x + plat.width
+                    horiz_rect.x = int(self.x)
+
+        # Apply gravity (vertical movement)
+        self.vel_y += gravity
+        self.y += self.vel_y
+
+        # Vertical collision resolution using previous Y to detect coming-from-above
+        self.on_ground = False
+        vert_rect = pygame.Rect(int(self.x), int(self.y), player_width, player_height)
+        for plat in platforms:
+            if vert_rect.colliderect(plat):
+                # coming down onto platform (allow 1 px tolerance to avoid tunneling)
+                if prev_y + player_height <= plat.y + 1:
+                    self.y = plat.y - player_height
+                    self.vel_y = 0
+                    self.on_ground = True
+                # hitting head on underside of platform
+                elif prev_y >= plat.y + plat.height:
+                    self.y = plat.y + plat.height
+                    self.vel_y = 0
+                vert_rect.y = int(self.y)
+
+        # Jump
+        if keys[pygame.K_SPACE] and self.on_ground:
+            self.vel_y = player_jump_strength
+            self.on_ground = False
+
+        # Animation update (use moving flag)
+        self._update_animation(moving)
+
+        # Update sprite rect for rendering (screen coordinates)
+        self.rect.topleft = (int(self.x - camera_scroll_x), int(self.y))
+

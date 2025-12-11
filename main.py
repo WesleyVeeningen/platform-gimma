@@ -1,148 +1,139 @@
-# Infinite platformer with full camera following
-
 import pygame
-import sys
-import random
+import os
+from platforms import (
+    generate_initial_platforms,
+    extend_platforms_if_needed,
+    draw_platforms
+)
+from settings import (
+    platform_min_gap, platform_max_gap,
+    platform_min_width, platform_max_width,
+    platform_base_y, platform_double_chance,
+    player_width, player_height
+)
+from player import Player
 
-# --- Window settings ---
-SCREEN_WIDTH = 800
-SCREEN_HEIGHT = 600
-FPS = 60
-
-# --- Colors ---
-WHITE = (255, 255, 255)
-BLUE = (0, 0, 255)
-GREEN = (0, 255, 0)
-
-# --- Player settings ---
-PLAYER_WIDTH = 50
-PLAYER_HEIGHT = 50
-PLAYER_COLOR = BLUE
-PLAYER_SPEED = 5
-GRAVITY = 0.5
-JUMP_STRENGTH = 12
-
-# --- Platform settings ---
-PLATFORM_WIDTH_MIN = 100
-PLATFORM_WIDTH_MAX = 300
-PLATFORM_HEIGHT = 20
-PLATFORM_GAP_MIN = 100
-PLATFORM_GAP_MAX = 250
-
-# Initialize Pygame
+# --- Pygame setup ---
 pygame.init()
-screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("Infinite Platformer")
+screen = pygame.display.set_mode((800, 600))
+pygame.display.set_caption("2D Platformer")
 clock = pygame.time.Clock()
 
-# --- Player class ---
-class Player(pygame.sprite.Sprite):
-    def __init__(self, x, y):
-        super().__init__()
-        self.image = pygame.Surface((PLAYER_WIDTH, PLAYER_HEIGHT))
-        self.image.fill(PLAYER_COLOR)
-        self.rect = self.image.get_rect(topleft=(x, y))
-        self.vel_x = 0
-        self.vel_y = 0
-        self.on_ground = False
+# --- Load and scale background (optional) ---
+background = None
+bg_path = os.path.join('images', 'background.jpeg')
+if os.path.exists(bg_path):
+    try:
+        background = pygame.image.load(bg_path)
+        background = pygame.transform.scale(background, (800, 600))
+    except Exception:
+        background = None
 
-    def update(self, platforms):
-        keys = pygame.key.get_pressed()
-        self.vel_x = 0
-        if keys[pygame.K_LEFT]:
-            self.vel_x = -PLAYER_SPEED
-        if keys[pygame.K_RIGHT]:
-            self.vel_x = PLAYER_SPEED
+# --- Camera ---
+camera_scroll_x = 0
 
-        self.rect.x += self.vel_x
+# --- Create starting platforms ---
+platforms = generate_initial_platforms(
+    amount_of_platforms=10,
+    min_gap=platform_min_gap,
+    max_gap=platform_max_gap,
+    min_width=platform_min_width,
+    max_width=platform_max_width,
+    base_y=platform_base_y,
+    double_chance=platform_double_chance
+)
 
-        # Gravity
-        self.vel_y += GRAVITY
-        self.rect.y += self.vel_y
+# --- Create guaranteed left ground platform so player never starts falling ---
+ground_height = 40
+ground_width = max(screen.get_width() * 2, platform_min_width)
+left_ground = pygame.Rect(0, platform_base_y, int(ground_width), ground_height)
 
-        # Check collisions with platforms
-        self.on_ground = False
-        for platform in platforms:
-            if self.rect.colliderect(platform.rect) and self.vel_y >= 0:
-                self.rect.bottom = platform.rect.top
-                self.vel_y = 0
-                self.on_ground = True
+# Ensure left_ground is first and does not overlap incorrectly with existing first
+if not platforms or platforms[0].x != 0:
+    platforms.insert(0, left_ground)
+else:
+    # make sure the existing first platform starts at 0 and is wide enough
+    platforms[0].x = 0
+    if platforms[0].width < player_width + 20:
+        platforms[0].width = player_width + 20
 
-    def jump(self):
-        if self.on_ground:
-            self.vel_y = -JUMP_STRENGTH
+# --- Create player and group ---
+player = Player()
 
-# --- Platform class ---
-class Platform(pygame.sprite.Sprite):
-    def __init__(self, x, y, width):
-        super().__init__()
-        self.image = pygame.Surface((width, PLATFORM_HEIGHT))
-        self.image.fill(GREEN)
-        self.rect = self.image.get_rect(topleft=(x, y))
+first_plat = platforms[0]
 
-# --- Sprite groups ---
-player = Player(0, 0)
-player_group = pygame.sprite.Group(player)
-platforms = pygame.sprite.Group()
+# place player slightly inside the first platform and on top of it
+player.x = first_plat.x + 10
+player.y = first_plat.y - player_height
+player.vel_y = 0
+player.on_ground = True
 
-# --- Camera offset ---
-camera_x = 0
-camera_y = 0
+# ensure sprite rect matches world coordinates (camera initially 0)
+camera_scroll_x = 0
+player.rect.topleft = (int(player.x - camera_scroll_x), int(player.y))
 
-# --- Infinite world generator ---
-world_width = 0
-world_height = 0
+player_group = pygame.sprite.Group()
+player_group.add(player)
 
-def generate_platform():
-    global world_width, world_height
-    width = random.randint(PLATFORM_WIDTH_MIN, PLATFORM_WIDTH_MAX)
-    gap_x = random.randint(PLATFORM_GAP_MIN, PLATFORM_GAP_MAX)
-    gap_y = random.randint(-150, 200)  # vertical randomness
-    x = world_width + gap_x
-    y = world_height + gap_y
-    if y > SCREEN_HEIGHT - 50:
-        y = SCREEN_HEIGHT - 50
-    elif y < 0:
-        y = 0
-    platforms.add(Platform(x, y, width))
-    world_width = x + width
-    world_height = y
-
-# Generate initial platforms
-platforms.add(Platform(-200, SCREEN_HEIGHT - 50, SCREEN_WIDTH + 400))
-for _ in range(20):
-    generate_platform()
+# debug toggle
+DEBUG = True
 
 # --- Main game loop ---
 running = True
+start_safe_frames = 30   # skip game-over check for the first N frames
+frame_count = 0
+
 while running:
+    dt = clock.tick(60)
+    frame_count += 1
+
+    # --- Event handling ---
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE:
-                player.jump()
 
-    # Update
-    player.update(platforms)
+    # --- Camera movement: follow player ---
+    camera_scroll_x = max(0, int(player.x - screen.get_width() * 0.25))
 
-    # Camera follows player
-    camera_x = player.rect.centerx - SCREEN_WIDTH // 2
-    camera_y = player.rect.centery - SCREEN_HEIGHT // 2
+    # --- Extend platforms as camera moves ---
+    extend_platforms_if_needed(
+        platforms,
+        camera_scroll_x,
+        screen.get_width(),
+        platform_min_gap,
+        platform_max_gap,
+        platform_min_width,
+        platform_max_width,
+        platform_base_y,
+        platform_double_chance
+    )
 
-    # Generate new platforms ahead
-    while world_width - camera_x < SCREEN_WIDTH + 200:
-        generate_platform()
+    # --- Update player (pass platforms and camera offset) ---
+    player_group.update(platforms, camera_scroll_x)
 
-    # Draw
-    screen.fill(WHITE)
-    for platform in platforms:
-        screen.blit(platform.image, (platform.rect.x - camera_x, platform.rect.y - camera_y))
+    # --- Debug output ---
+    if DEBUG:
+        print(
+            f"frame={frame_count} player.world=({player.x:.1f},{player.y:.1f}) "
+            f"vel_y={getattr(player,'vel_y',0):.2f} on_ground={getattr(player,'on_ground',False)} "
+            f"rect={player.rect} camera={camera_scroll_x}"
+        )
+        for i, plat in enumerate(platforms[:6]):
+            print(f"  plat[{i}] = x={plat.x} y={plat.y} w={plat.width} h={plat.height}")
 
+    # --- End game if player goes off-screen (but give a short grace at start) ---
+    screen_rect = pygame.Rect(0, 0, screen.get_width(), screen.get_height())
+    if frame_count > start_safe_frames and not player.rect.colliderect(screen_rect):
+        print("Player left the screen — exiting.")
+        running = False
+
+    # --- Draw everything ---
+    screen.fill((30, 30, 30))
+    if background:
+        screen.blit(background, (0, 0))
+    draw_platforms(screen, camera_scroll_x, platforms)
     player_group.draw(screen)
 
     pygame.display.flip()
-    clock.tick(FPS)
 
 pygame.quit()
-sys.exit()
