@@ -1,6 +1,6 @@
 import pygame
 import os
-from settings import gravity, player_jump_strength, player_move_speed, player_width, player_height, color_player
+from settings import gravity, player_jump_strength, player_move_speed, player_width, player_height, color_player, player_max_jumps
 
 class Player(pygame.sprite.Sprite):
     def __init__(self, x=200, y=300):
@@ -45,6 +45,11 @@ class Player(pygame.sprite.Sprite):
         self.y = y
         self.vel_y = 0
         self.on_ground = False
+
+        # double-jump state
+        self.max_jumps = player_max_jumps
+        self.jumps_left = self.max_jumps
+        self.jump_pressed_last = False
 
     def _update_animation(self, moving):
         now = pygame.time.get_ticks()
@@ -114,16 +119,21 @@ class Player(pygame.sprite.Sprite):
                     self.y = plat.y - player_height
                     self.vel_y = 0
                     self.on_ground = True
+                    # reset jumps when landing
+                    self.jumps_left = self.max_jumps
                 # hitting head on underside of platform
                 elif prev_y >= plat.y + plat.height:
                     self.y = plat.y + plat.height
                     self.vel_y = 0
                 vert_rect.y = int(self.y)
 
-        # Jump
-        if keys[pygame.K_SPACE] and self.on_ground:
+        # Jump (edge-detect space so holding doesn't repeatedly trigger)
+        jump_pressed = keys[pygame.K_SPACE]
+        if jump_pressed and not self.jump_pressed_last and self.jumps_left > 0:
             self.vel_y = player_jump_strength
+            self.jumps_left -= 1
             self.on_ground = False
+        self.jump_pressed_last = jump_pressed
 
         # Animation update (use moving flag)
         self._update_animation(moving)

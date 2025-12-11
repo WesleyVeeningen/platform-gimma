@@ -16,3 +16,6 @@ player_move_speed = 5
 player_width = 48
 player_height = 64
 color_player = (255, 100, 100)
+
+# Maximum number of jumps allowed (1 = single jump, 2 = double jump)
+player_max_jumps = 2

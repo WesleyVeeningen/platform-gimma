@@ -1,5 +1,6 @@
 import pygame
 import os
+import random
 from platforms import (
     generate_initial_platforms,
     extend_platforms_if_needed,
@@ -18,6 +19,7 @@ pygame.init()
 screen = pygame.display.set_mode((800, 600))
 pygame.display.set_caption("2D Platformer")
 clock = pygame.time.Clock()
+font = pygame.font.SysFont(None, 28)
 
 # --- Load and scale background (optional) ---
 background = None
@@ -28,6 +30,29 @@ if os.path.exists(bg_path):
         background = pygame.transform.scale(background, (800, 600))
     except Exception:
         background = None
+
+# --- Load coin image (fish) ---
+fish_path = os.path.join('images', 'fish.png')
+if os.path.exists(fish_path):
+    fish_img = pygame.image.load(fish_path).convert_alpha()
+    COIN_W, COIN_H = 32, 32
+    fish_img = pygame.transform.scale(fish_img, (COIN_W, COIN_H))
+else:
+    # fallback colored circle surface
+    COIN_W, COIN_H = 24, 24
+    fish_img = pygame.Surface((COIN_W, COIN_H), pygame.SRCALPHA)
+    pygame.draw.circle(fish_img, (255, 200, 0), (COIN_W//2, COIN_H//2), COIN_W//2)
+
+# --- Load orca image (enemy) ---
+orca_path = os.path.join('images', 'orca.png')
+if os.path.exists(orca_path):
+    orca_img = pygame.image.load(orca_path).convert_alpha()
+    ORCA_W, ORCA_H = 64, 48
+    orca_img = pygame.transform.scale(orca_img, (ORCA_W, ORCA_H))
+else:
+    ORCA_W, ORCA_H = 48, 32
+    orca_img = pygame.Surface((ORCA_W, ORCA_H), pygame.SRCALPHA)
+    pygame.draw.rect(orca_img, (0, 120, 180), (0, 0, ORCA_W, ORCA_H))
 
 # --- Camera ---
 camera_scroll_x = 0
@@ -57,23 +82,129 @@ else:
     if platforms[0].width < player_width + 20:
         platforms[0].width = player_width + 20
 
+# --- Coins: store as world-space rects ---
+coins = []  # list of pygame.Rect in world coordinates
+orcas = []  # list of pygame.Rect for enemies (world coords)
+score = 0
+
+# spawn tuning: make coins rarer and only attempt once per platform
+INITIAL_COIN_CHANCE = 0.20     # chance when creating initial platforms
+NEW_PLATFORM_COIN_CHANCE = 0.12  # chance for newly extended platforms
+
+# Increased orca spawn rates (was 0.04 / 0.05)
+INITIAL_ORCA_CHANCE = 0.08     # slightly more frequent initial orca spawn on platforms
+NEW_ORCA_CHANCE = 0.12         # higher chance for newly-seen platforms
+
+checked_platforms = set()      # track platforms we've already attempted to spawn a coin/orca for
+
+def spawn_coin_on_platform(plat):
+    # place coin centered on platform, just above it
+    cx = plat.x + plat.width // 2 - COIN_W // 2
+    cy = plat.y - COIN_H - 8
+    if cy < 0:
+        cy = max(0, plat.y - COIN_H - 4)
+    coin_rect = pygame.Rect(cx, cy, COIN_W, COIN_H)
+    coins.append(coin_rect)
+
+def spawn_orca_on_platform(plat):
+    # place orca centered on platform, standing on top of it
+    ox = plat.x + plat.width // 2 - ORCA_W // 2
+    oy = plat.y - ORCA_H + 2  # small overlap so it looks like it sits on the platform
+    orca_rect = pygame.Rect(ox, oy, ORCA_W, ORCA_H)
+    orcas.append(orca_rect)
+
+# spawn initial coins for platforms (skip the guaranteed left ground to avoid too many)
+for i, plat in enumerate(platforms):
+    # mark this platform as checked so we only try once
+    checked_platforms.add(id(plat))
+    if i == 0:
+        # small chance on the left ground; normally skip
+        if random.random() < (INITIAL_COIN_CHANCE * 0.5):
+            spawn_coin_on_platform(plat)
+        continue
+    if random.random() < INITIAL_COIN_CHANCE:
+        spawn_coin_on_platform(plat)
+    # rare initial orca spawns (skip left ground if present)
+    if random.random() < INITIAL_ORCA_CHANCE:
+        spawn_orca_on_platform(plat)
+
 # --- Create player and group ---
 player = Player()
-
-first_plat = platforms[0]
-
-# place player slightly inside the first platform and on top of it
-player.x = first_plat.x + 10
-player.y = first_plat.y - player_height
-player.vel_y = 0
-player.on_ground = True
-
-# ensure sprite rect matches world coordinates (camera initially 0)
-camera_scroll_x = 0
-player.rect.topleft = (int(player.x - camera_scroll_x), int(player.y))
-
 player_group = pygame.sprite.Group()
 player_group.add(player)
+
+# --- Game state flags ---
+game_over = False
+
+# Restart button visuals
+RESTART_W, RESTART_H = 220, 56
+restart_btn_rect = pygame.Rect((screen.get_width()//2 - RESTART_W//2,
+                                screen.get_height()//2 + 30,
+                                RESTART_W, RESTART_H))
+
+def reset_game():
+    """
+    Reset all mutable game state to start a fresh run.
+    Uses globals because main.py manages top-level state.
+    """
+    global platforms, left_ground, coins, orcas, checked_platforms, score
+    global camera_scroll_x, frame_count, game_over, player, player_group
+
+    # recreate platforms and guaranteed left ground
+    platforms = generate_initial_platforms(
+        amount_of_platforms=10,
+        min_gap=platform_min_gap,
+        max_gap=platform_max_gap,
+        min_width=platform_min_width,
+        max_width=platform_max_width,
+        base_y=platform_base_y,
+        double_chance=platform_double_chance
+    )
+
+    ground_height = 40
+    ground_width = max(screen.get_width() * 2, platform_min_width)
+    left_ground = pygame.Rect(0, platform_base_y, int(ground_width), ground_height)
+    if not platforms or platforms[0].x != 0:
+        platforms.insert(0, left_ground)
+    else:
+        platforms[0].x = 0
+        if platforms[0].width < player_width + 20:
+            platforms[0].width = player_width + 20
+
+    # clear enemies/coins and tracking set
+    coins = []
+    orcas = []
+    checked_platforms = set()
+
+    # reset score and camera
+    score = 0
+    camera_scroll_x = 0
+    frame_count = 0
+
+    # reset player to starting platform
+    player.x = platforms[0].x + 10
+    player.y = platforms[0].y - player_height
+    player.vel_y = 0
+    player.on_ground = True
+    player.jumps_left = player.max_jumps
+    player.rect.topleft = (int(player.x - camera_scroll_x), int(player.y))
+
+    # mark initial platforms as checked and possibly spawn a few things (rare)
+    for i, plat in enumerate(platforms):
+        checked_platforms.add(id(plat))
+        if i == 0:
+            if random.random() < (INITIAL_COIN_CHANCE * 0.5):
+                spawn_coin_on_platform(plat)
+            continue
+        if random.random() < INITIAL_COIN_CHANCE:
+            spawn_coin_on_platform(plat)
+        if random.random() < INITIAL_ORCA_CHANCE:
+            spawn_orca_on_platform(plat)
+
+    game_over = False
+
+# ensure initial state uses reset_game() semantics
+reset_game()
 
 # debug toggle
 DEBUG = True
@@ -92,47 +223,101 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
-    # --- Camera movement: follow player ---
-    camera_scroll_x = max(0, int(player.x - screen.get_width() * 0.25))
+        # If game over, check for restart click
+        if game_over and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if restart_btn_rect.collidepoint(event.pos):
+                reset_game()
 
-    # --- Extend platforms as camera moves ---
-    extend_platforms_if_needed(
-        platforms,
-        camera_scroll_x,
-        screen.get_width(),
-        platform_min_gap,
-        platform_max_gap,
-        platform_min_width,
-        platform_max_width,
-        platform_base_y,
-        platform_double_chance
-    )
+    # if game is over, skip updates but still draw and accept clicks
+    if not game_over:
+        # --- Camera movement: follow player ---
+        camera_scroll_x = max(0, int(player.x - screen.get_width() * 0.25))
 
-    # --- Update player (pass platforms and camera offset) ---
-    player_group.update(platforms, camera_scroll_x)
+        # --- Extend platforms as camera moves ---
+        extend_platforms_if_needed(
+            platforms,
+            camera_scroll_x,
+            screen.get_width(),
+            platform_min_gap,
+            platform_max_gap,
+            platform_min_width,
+            platform_max_width,
+            platform_base_y,
+            platform_double_chance
+        )
+
+        # spawn coins/orcas on newly created platforms (attempt once per platform)
+        for plat in platforms:
+            pid = id(plat)
+            if pid in checked_platforms:
+                continue
+            checked_platforms.add(pid)
+            if plat is left_ground and random.random() > 0.10:
+                continue
+            if random.random() < NEW_PLATFORM_COIN_CHANCE:
+                spawn_coin_on_platform(plat)
+            if random.random() < NEW_ORCA_CHANCE:
+                spawn_orca_on_platform(plat)
+
+        # --- Update player (pass platforms and camera offset) ---
+        player_group.update(platforms, camera_scroll_x)
+
+        # --- Coin collection: use player's world rect and remove immediately ---
+        player_world_rect = pygame.Rect(int(player.x), int(player.y), player_width, player_height)
+        for coin in coins[:]:
+            if player_world_rect.colliderect(coin):
+                score += 1
+                coins.remove(coin)
+
+        # --- Orca collision: touching an orca ends the run (enter game_over state) ---
+        for orca in orcas:
+            if player_world_rect.colliderect(orca):
+                game_over = True
+                break
 
     # --- Debug output ---
     if DEBUG:
-        print(
-            f"frame={frame_count} player.world=({player.x:.1f},{player.y:.1f}) "
-            f"vel_y={getattr(player,'vel_y',0):.2f} on_ground={getattr(player,'on_ground',False)} "
-            f"rect={player.rect} camera={camera_scroll_x}"
-        )
-        for i, plat in enumerate(platforms[:6]):
-            print(f"  plat[{i}] = x={plat.x} y={plat.y} w={plat.width} h={plat.height}")
+        pass
 
     # --- End game if player goes off-screen (but give a short grace at start) ---
     screen_rect = pygame.Rect(0, 0, screen.get_width(), screen.get_height())
-    if frame_count > start_safe_frames and not player.rect.colliderect(screen_rect):
-        print("Player left the screen — exiting.")
-        running = False
+    if not game_over and frame_count > start_safe_frames and not player.rect.colliderect(screen_rect):
+        game_over = True
 
     # --- Draw everything ---
     screen.fill((30, 30, 30))
     if background:
         screen.blit(background, (0, 0))
+
+    # draw platforms, coins, and orcas
     draw_platforms(screen, camera_scroll_x, platforms)
+    for coin in coins:
+        screen.blit(fish_img, (coin.x - camera_scroll_x, coin.y))
+    for orca in orcas:
+        screen.blit(orca_img, (orca.x - camera_scroll_x, orca.y))
+
     player_group.draw(screen)
+
+    # draw coin counter top-right
+    txt = font.render(f"Coins: {score}", True, (255, 220, 50))
+    screen.blit(txt, (screen.get_width() - txt.get_width() - 10, 10))
+
+    # If game over, draw overlay and restart button
+    if game_over:
+        overlay = pygame.Surface((screen.get_width(), screen.get_height()), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        screen.blit(overlay, (0, 0))
+
+        go_text = font.render("GAME OVER", True, (220, 40, 40))
+        go_rect = go_text.get_rect(center=(screen.get_width()//2, screen.get_height()//2 - 20))
+        screen.blit(go_text, go_rect)
+
+        # Draw restart button
+        pygame.draw.rect(screen, (200, 200, 200), restart_btn_rect, border_radius=8)
+        pygame.draw.rect(screen, (120, 120, 120), restart_btn_rect, 3, border_radius=8)
+        btn_txt = font.render("Restart", True, (20, 20, 20))
+        btn_txt_rect = btn_txt.get_rect(center=restart_btn_rect.center)
+        screen.blit(btn_txt, btn_txt_rect)
 
     pygame.display.flip()
 
