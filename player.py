@@ -46,10 +46,30 @@ class Player(pygame.sprite.Sprite):
         self.vel_y = 0
         self.on_ground = False
 
+        # horizontal velocity for momentum (so stopping while walking doesn't
+        # instantly stop the player mid-air)
+        self.vel_x = 0.0
+        # tuning: higher ground friction = stop faster on ground; air friction
+        # close to 1.0 means slower bleed-off in air
+        self._ground_friction = 0.5
+        self._air_friction = 0.985
+        # how fast velocity approaches target when input is held (less in air)
+        self._ground_accel = 1.0
+        self._air_accel = 0.35
+
         # double-jump state
         self.max_jumps = player_max_jumps
         self.jumps_left = self.max_jumps
         self.jump_pressed_last = False
+
+        # --- reduced collision hitbox (anchored to sprite bottom) ---
+        # make collision box slightly smaller than the visible sprite so the
+        # player can fit under low platforms and have a more forgiving hitbox.
+        self.cw = max(8, player_width - 12)   # collision width
+        self.ch = max(8, player_height - 10)  # collision height
+        # offset so collision box is centered horizontally and anchored to bottom
+        self.c_offset_x = (player_width - self.cw) / 2.0
+        self.c_offset_y = (player_height - self.ch)
 
     def _update_animation(self, moving):
         now = pygame.time.get_ticks()
@@ -71,30 +91,50 @@ class Player(pygame.sprite.Sprite):
         self.rect.topleft = prev_topleft
 
     def update(self, platforms, camera_scroll_x):
+        # horizontal momentum handling: vel_x persists and decays differently
+        # on ground vs in air so player doesn't snap to a stop mid-air.
         keys = pygame.key.get_pressed()
 
         # remember previous position for collision direction checks
         prev_x = self.x
         prev_y = self.y
 
-        # Horizontal movement
-        moving = False
-        if keys[pygame.K_LEFT]:
-            self.x -= player_move_speed
-            self.facing_right = False
-            moving = True
-        if keys[pygame.K_RIGHT]:
-            self.x += player_move_speed
-            self.facing_right = True
-            moving = True
+        # INPUT: determine desired horizontal speed from keys
+        desired = 0
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            desired = -player_move_speed
+        elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            desired = player_move_speed
+
+        # choose accel depending on whether we are on the ground
+        accel = self._ground_accel if self.on_ground else self._air_accel
+
+        # If there's input, move vel_x toward desired target.
+        # If no horizontal input, only apply friction (don't pull vel toward 0 again)
+        if desired != 0:
+            self.vel_x += (desired - self.vel_x) * accel
+        else:
+            if self.on_ground:
+                self.vel_x *= self._ground_friction
+                # snap to zero to avoid tiny drift
+                if abs(self.vel_x) < 0.2:
+                    self.vel_x = 0.0
+            else:
+                # in air: very light damping so momentum persists longer
+                self.vel_x *= 0.993
+
+        # apply horizontal movement
+        self.x += self.vel_x
+
+        moving = abs(self.vel_x) > 0.3
 
         # Horizontal collision resolution (prevent moving into platform sides)
-        horiz_rect = pygame.Rect(int(self.x), int(self.y), player_width, player_height)
+        # use the reduced collision rect (world coords)
+        horiz_rect = pygame.Rect(int(self.x + self.c_offset_x), int(self.y + self.c_offset_y), int(self.cw), int(self.ch))
         for plat in platforms:
             if horiz_rect.colliderect(plat):
                 # Only treat this as a side collision if there's vertical overlap
-                # (prevents pushing the player off when they are landing on top)
-                vertical_overlap = not ((self.y + player_height) <= plat.y or self.y >= (plat.y + plat.height))
+                vertical_overlap = not (horiz_rect.bottom <= plat.y or horiz_rect.top >= (plat.y + plat.height))
                 if vertical_overlap:
                     # collided horizontally: push back to previous safe position
                     if prev_x < self.x:
@@ -103,7 +143,8 @@ class Player(pygame.sprite.Sprite):
                     elif prev_x > self.x:
                         # moving left -> place to right of platform
                         self.x = plat.x + plat.width
-                    horiz_rect.x = int(self.x)
+                    # update horiz_rect to new position
+                    horiz_rect.x = int(self.x + self.c_offset_x)
 
         # Apply gravity (vertical movement)
         self.vel_y += gravity
@@ -111,11 +152,13 @@ class Player(pygame.sprite.Sprite):
 
         # Vertical collision resolution using previous Y to detect coming-from-above
         self.on_ground = False
-        vert_rect = pygame.Rect(int(self.x), int(self.y), player_width, player_height)
+        vert_rect = pygame.Rect(int(self.x + self.c_offset_x), int(self.y + self.c_offset_y), int(self.cw), int(self.ch))
         for plat in platforms:
             if vert_rect.colliderect(plat):
                 # coming down onto platform (allow 1 px tolerance to avoid tunneling)
-                if prev_y + player_height <= plat.y + 1:
+                prev_collision_bottom = prev_y + self.c_offset_y + self.ch
+                if prev_collision_bottom <= plat.y + 1:
+                    # snap sprite so its feet rest on platform (top of sprite = platform.y - sprite_height)
                     self.y = plat.y - player_height
                     self.vel_y = 0
                     self.on_ground = True
@@ -125,7 +168,7 @@ class Player(pygame.sprite.Sprite):
                 elif prev_y >= plat.y + plat.height:
                     self.y = plat.y + plat.height
                     self.vel_y = 0
-                vert_rect.y = int(self.y)
+                vert_rect.y = int(self.y + self.c_offset_y)
 
         # Jump (edge-detect space so holding doesn't repeatedly trigger)
         jump_pressed = keys[pygame.K_SPACE]
@@ -139,5 +182,6 @@ class Player(pygame.sprite.Sprite):
         self._update_animation(moving)
 
         # Update sprite rect for rendering (screen coordinates)
+        # rendering still uses full sprite size; camera offset applied here by caller
         self.rect.topleft = (int(self.x - camera_scroll_x), int(self.y))
 
