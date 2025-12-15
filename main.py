@@ -1,3 +1,4 @@
+import time
 import pygame
 import os
 import random
@@ -15,6 +16,7 @@ from settings import (
 from player import Player
 
 import blackjack  # to ensure blackjack.py is included in the package
+from blackjack import load_card_images, load_card_back_image
 
 # --- Pygame setup ---
 pygame.init()
@@ -91,6 +93,7 @@ orcas = []  # list of pygame.Rect for enemies (world coords)
 score = 0
 distance = 0  # number of platforms passed
 platforms_passed_threshold = 0  # track the X position to detect platform passes
+distance_tracking_enabled = True  # flag to enable/disable distance tracking
 
 # spawn tuning: make coins rarer and only attempt once per platform
 INITIAL_COIN_CHANCE = 0.40     # chance when creating initial platforms
@@ -169,12 +172,20 @@ def play_blackjack_minigame(screen, font, pygame):
     player_turn = True
     game_complete = False
     player_won = False
+    player_stood = False  # Track when player stands to reveal dealer's second card
+    dealer_playing = False  # Track when dealer is drawing cards
+    dealer_finished = False  # Track when dealer is done drawing
+    last_card_time = 0  # Track time for dealer card draws
+
+    # Load card back image for hidden cards
+    card_back_img = load_card_back_image()
 
     minigame_clock = pygame.time.Clock()
 
     # Minigame loop
     while not game_complete:
-        minigame_clock.tick(60)
+        dt = minigame_clock.tick(60)
+        current_time = pygame.time.get_ticks()
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -189,11 +200,20 @@ def play_blackjack_minigame(screen, font, pygame):
                             game_complete = True
                     elif event.key == pygame.K_s:  # Stand
                         player_turn = False
-                        # Dealer plays
-                        while cards.calculate_hand_value(dealer_hand) < 17:
-                            dealer_hand.append(cards.deal_card())
-                        dealer_value = cards.calculate_hand_value(dealer_hand)
-                        game_complete = True
+                        player_stood = True
+                        dealer_playing = True
+                        last_card_time = current_time
+
+        # Dealer plays - draw one card per second
+        if dealer_playing and not dealer_finished:
+            current_dealer_value = cards.calculate_hand_value(dealer_hand)
+            if current_dealer_value < 17 and current_time - last_card_time >= 1000:
+                dealer_hand.append(cards.deal_card())
+                last_card_time = current_time
+            elif current_dealer_value >= 17:
+                dealer_finished = True
+                dealer_value = cards.calculate_hand_value(dealer_hand)
+                game_complete = True
 
         # Draw minigame
         screen.fill((30, 70, 30))
@@ -203,23 +223,49 @@ def play_blackjack_minigame(screen, font, pygame):
             "BLACKJACK - Press H to Hit, S to Stand", True, (255, 255, 255))
         screen.blit(title, (10, 10))
 
-        # Dealer hand
-        dealer_text = font.render(f"Dealer: {', '.join([c[0] for c in dealer_hand])} = {dealer_value}",
-                                  True, (200, 50, 50))
-        screen.blit(dealer_text, (10, 80))
+        # Dealer hand with card images
+        dealer_label = font.render("Dealer:", True, (200, 50, 50))
+        screen.blit(dealer_label, (10, 70))
 
-        # Player hand
-        player_text = font.render(f"Player: {', '.join([c[0] for c in player_hand])} = {player_value}",
-                                  True, (50, 200, 50))
-        screen.blit(player_text, (10, 150))
+        dealer_images = load_card_images(dealer_hand)
+        card_x = 10
+        for i, card_img in enumerate(dealer_images):
+            if i == 1 and not player_stood:
+                # Hide second card until player stands
+                screen.blit(card_back_img, (card_x, 100))
+            else:
+                screen.blit(card_img, (card_x, 100))
+            card_x += 95
+
+        # Show dealer value only when standing or complete
+        if player_stood or game_complete:
+            dealer_value_text = font.render(
+                f"Value: {cards.calculate_hand_value(dealer_hand)}", True, (200, 50, 50))
+            screen.blit(dealer_value_text, (10, 235))
+
+        # Player hand with card images
+        player_label = font.render("Player:", True, (50, 200, 50))
+        screen.blit(player_label, (10, 270))
+
+        player_images = load_card_images(player_hand)
+        card_x = 10
+        for card_img in player_images:
+            screen.blit(card_img, (card_x, 290))
+            card_x += 95
+
+        # Player value always shown
+        player_value = cards.calculate_hand_value(player_hand)
+        player_value_text = font.render(
+            f"Value: {player_value}", True, (50, 200, 50))
+        screen.blit(player_value_text, (10, 425))
 
         # Status
         if player_value > 21:
             status = font.render("BUST! You lose.", True, (255, 50, 50))
-            screen.blit(status, (10, 220))
-            game_complete = True
+            screen.blit(status, (10, 450))
             player_won = False
-        elif not player_turn and game_complete:
+        elif game_complete:
+            dealer_value = cards.calculate_hand_value(dealer_hand)
             if dealer_value > 21:
                 status = font.render(
                     "Dealer BUST! You win!", True, (50, 255, 50))
@@ -235,11 +281,13 @@ def play_blackjack_minigame(screen, font, pygame):
                 status = font.render(
                     "Push (tie). You lose.", True, (255, 200, 50))
                 player_won = False
-            screen.blit(status, (10, 220))
+            screen.blit(status, (10, 450))
         elif player_turn:
-            status = font.render("Your turn!", True, (200, 200, 50))
-            screen.blit(status, (10, 220))
+            status = font.render(
+                "Your turn! Press H to Hit, S to Stand", True, (200, 200, 50))
+            screen.blit(status, (10, 450))
 
+        time.sleep(1)  # add delay on closing the window to see result
         pygame.display.flip()
 
     return player_won
@@ -252,7 +300,7 @@ def reset_game():
     """
     global platforms, left_ground, coins, orcas, checked_platforms, score
     global camera_scroll_x, frame_count, game_over, player, player_group
-    global distance, platforms_passed_threshold
+    global distance, platforms_passed_threshold, distance_tracking_enabled
 
     # recreate platforms and guaranteed left ground
     platforms = generate_initial_platforms(
@@ -285,6 +333,7 @@ def reset_game():
     score = 0
     distance = 0
     platforms_passed_threshold = 0
+    distance_tracking_enabled = True
     camera_scroll_x = 0
     frame_count = 0
 
@@ -371,14 +420,15 @@ while running:
         player_group.update(platforms, camera_scroll_x)
 
         # --- Track distance (platforms passed) ---
-        for plat in platforms:
-            # Count each platform as passed once when player moves past its right edge
-            if plat is not left_ground:  # Don't count the starting ground
-                if plat.right <= platforms_passed_threshold and plat.x > 0:
-                    continue  # Already counted
-                if player.x > plat.right and plat.right > platforms_passed_threshold:
-                    distance += 1
-                    platforms_passed_threshold = plat.right
+        if distance_tracking_enabled:
+            for plat in platforms:
+                # Count each platform as passed once when player moves past its right edge
+                if plat is not left_ground:  # Don't count the starting ground
+                    if plat.right <= platforms_passed_threshold and plat.x > 0:
+                        continue  # Already counted
+                    if player.x > plat.right and plat.right > platforms_passed_threshold:
+                        distance += 1
+                        platforms_passed_threshold = plat.right
 
         # --- Coin collection: use player's world rect and remove immediately ---
         player_world_rect = pygame.Rect(int(player.x), int(
@@ -398,6 +448,8 @@ while running:
                     if play_blackjack_minigame(screen, font, pygame):
                         # Player won! Continue the game
                         game_over = False
+                        # Reset threshold to continue tracking
+                        platforms_passed_threshold = int(player.x)
                 break
 
     # --- Debug output ---
@@ -420,6 +472,8 @@ while running:
                 player.vel_y = 0
                 player.on_ground = True
                 player.jumps_left = player.max_jumps
+                # Reset threshold to continue tracking
+                platforms_passed_threshold = int(player.x)
 
     # --- Draw everything ---
     screen.fill((30, 30, 30))
